@@ -3979,6 +3979,58 @@ describe('executeDagWorkflow -- resume with priorCompletedNodes', () => {
       expect(failedData.error).toContain('Subprocess crashed mid-turn');
     });
 
+    it('loop iteration treats isError:true + subtype:success as success', async () => {
+      // The SDK occasionally returns is_error:true with subtype:'success' — a
+      // contradictory state. Verify the loop treats it as a successful iteration
+      // rather than crashing.
+      mockSendQueryDag.mockImplementation(function* () {
+        yield { type: 'assistant', content: 'All tasks DONE.' };
+        yield {
+          type: 'result',
+          isError: true,
+          errorSubtype: 'success',
+          sessionId: 'sid-ok',
+        };
+      });
+
+      const store = createMockStore();
+      const mockDeps = createMockDeps(store);
+      const platform = createMockPlatform();
+      const workflowRun = makeWorkflowRun();
+
+      await executeDagWorkflow(
+        mockDeps,
+        platform,
+        'conv-dag',
+        testDir,
+        {
+          name: 'loop-success-err-flag',
+          nodes: [
+            {
+              id: 'work',
+              loop: {
+                prompt: 'Do the work. Say DONE.',
+                until: 'DONE',
+                max_iterations: 5,
+              },
+            },
+          ],
+        },
+        workflowRun,
+        'claude',
+        undefined,
+        join(testDir, 'artifacts'),
+        join(testDir, 'logs'),
+        'main',
+        'docs/',
+        minimalConfig
+      );
+
+      // The workflow should complete successfully (completion signal detected)
+      const failCalls = (store.failWorkflowRun as ReturnType<typeof mock>).mock.calls;
+      expect(failCalls.length).toBe(0);
+    });
+
     it('non-interactive loop is unaffected (no pause)', async () => {
       mockSendQueryDag.mockImplementation(function* () {
         yield { type: 'assistant', content: 'Still working...' };
@@ -5054,6 +5106,56 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
     expect(failedData.error).toContain('permission denied');
   });
 
+  it('treats isError:true + subtype:success as a successful node', async () => {
+    // The SDK occasionally returns is_error:true with subtype:'success' — a
+    // contradictory state. Verify the node completes successfully rather than
+    // failing with "SDK returned success".
+    mockSendQueryDag.mockImplementation(function* () {
+      yield { type: 'assistant', content: 'Implementation complete.' };
+      yield {
+        type: 'result',
+        isError: true,
+        errorSubtype: 'success',
+        sessionId: 'sid-ok',
+      };
+    });
+
+    const store = createMockStore();
+    const mockDeps = createMockDeps(store);
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-dag',
+      testDir,
+      {
+        name: 'success-err-flag-test',
+        nodes: [{ id: 'step1', command: 'my-cmd' }],
+      },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    // The workflow should complete — failWorkflowRun must NOT have been called
+    const failCalls = (store.failWorkflowRun as ReturnType<typeof mock>).mock.calls;
+    expect(failCalls.length).toBe(0);
+
+    // The node should report as completed
+    const eventCalls = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    const completedEvents = eventCalls.filter(
+      (call: unknown[]) => (call[0] as Record<string, unknown>).event_type === 'node_completed'
+    );
+    expect(completedEvents.length).toBeGreaterThan(0);
+  });
+
   it('forwards workflow-level effort to node when no per-node override', async () => {
     const mockDeps = createMockDeps();
     const platform = createMockPlatform();
@@ -5150,6 +5252,175 @@ describe('executeDagWorkflow -- Claude SDK advanced options', () => {
     const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
     const warning = messages.find(m => m.includes('effort') && m.toLowerCase().includes('codex'));
     expect(warning).toBeDefined();
+  });
+});
+
+describe('executeDagWorkflow -- model flag parsing ([1m] beta injection)', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = join(
+      tmpdir(),
+      `dag-model-flags-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    const commandsDir = join(testDir, '.archon', 'commands');
+    await mkdir(commandsDir, { recursive: true });
+    await writeFile(join(commandsDir, 'my-cmd.md'), 'My command prompt');
+
+    mockSendQueryDag.mockClear();
+    mockGetAgentProviderDag.mockClear();
+    mockLogFn.mockClear();
+
+    mockSendQueryDag.mockImplementation(function* () {
+      yield { type: 'assistant', content: 'DAG AI response' };
+      yield { type: 'result', sessionId: 'dag-session-id' };
+    });
+    mockGetAgentProviderDag.mockImplementation(() => ({
+      sendQuery: mockSendQueryDag,
+      getType: () => 'claude',
+      getCapabilities: mockClaudeCapabilities,
+    }));
+  });
+
+  afterEach(async () => {
+    try {
+      await rm(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  it('strips [1m] suffix before provider inference so opus[1m] routes to Claude', async () => {
+    const mockDeps = createMockDeps();
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    const result = await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-dag',
+      testDir,
+      {
+        name: 'model-flag-test',
+        nodes: [{ id: 'step1', command: 'my-cmd', model: 'opus[1m]' }],
+      },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(result).toBeDefined();
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    const nodeConfig = optionsArg?.nodeConfig as Record<string, unknown>;
+    expect(nodeConfig?.betas).toEqual(['context-1m-2025-08-07']);
+    // Model passed to SDK should be the bare name without the flag
+    expect(optionsArg?.model).toBe('opus');
+  });
+
+  it('merges [1m] beta with explicitly set betas without duplicates', async () => {
+    const mockDeps = createMockDeps();
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-dag',
+      testDir,
+      {
+        name: 'model-flag-merge-test',
+        nodes: [
+          {
+            id: 'step1',
+            command: 'my-cmd',
+            model: 'opus[1m]',
+            betas: ['context-1m-2025-08-07', 'other-beta'],
+          },
+        ],
+      },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    const nodeConfig = optionsArg?.nodeConfig as Record<string, unknown>;
+    // No duplicate — context-1m-2025-08-07 appears only once
+    expect(nodeConfig?.betas).toEqual(['context-1m-2025-08-07', 'other-beta']);
+  });
+
+  it('strips [1m] from a full model id like claude-opus-4-6[1m]', async () => {
+    const mockDeps = createMockDeps();
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-dag',
+      testDir,
+      {
+        name: 'full-model-flag-test',
+        nodes: [{ id: 'step1', command: 'my-cmd', model: 'claude-opus-4-6[1m]' }],
+      },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    const nodeConfig = optionsArg?.nodeConfig as Record<string, unknown>;
+    expect(nodeConfig?.betas).toEqual(['context-1m-2025-08-07']);
+    expect(optionsArg?.model).toBe('claude-opus-4-6');
+  });
+
+  it('leaves model and betas untouched when no flags are present', async () => {
+    const mockDeps = createMockDeps();
+    const platform = createMockPlatform();
+    const workflowRun = makeWorkflowRun();
+
+    await executeDagWorkflow(
+      mockDeps,
+      platform,
+      'conv-dag',
+      testDir,
+      {
+        name: 'no-flag-test',
+        nodes: [{ id: 'step1', command: 'my-cmd', model: 'opus' }],
+      },
+      workflowRun,
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(mockSendQueryDag.mock.calls.length).toBeGreaterThan(0);
+    const optionsArg = mockSendQueryDag.mock.calls[0][3] as Record<string, unknown>;
+    const nodeConfig = optionsArg?.nodeConfig as Record<string, unknown>;
+    expect(nodeConfig?.betas).toBeUndefined();
+    expect(optionsArg?.model).toBe('opus');
   });
 });
 

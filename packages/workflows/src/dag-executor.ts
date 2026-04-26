@@ -318,6 +318,39 @@ export function substituteNodeOutputRefs(
 // buildSDKHooksFromYAML moved to @archon/providers/src/claude/provider.ts
 // loadMcpConfig moved to @archon/providers/src/claude/provider.ts
 
+const MODEL_FLAG_BETAS: Record<string, string> = {
+  '1m': 'context-1m-2025-08-07',
+};
+
+/**
+ * Parse model flags encoded as `model[flag1,flag2]` (e.g. `opus[1m]`).
+ * Returns the bare model name and any beta strings the flags map to.
+ * Unknown flags are silently ignored to stay forward-compatible.
+ */
+function parseModelFlags(model: string): { bareModel: string; extraBetas: string[] } {
+  const match = /^([^[]+)\[([^\]]+)\]$/.exec(model);
+  if (!match) return { bareModel: model, extraBetas: [] };
+  const bareModel = match[1];
+  const extraBetas = match[2]
+    .split(',')
+    .map(f => MODEL_FLAG_BETAS[f.trim()])
+    .filter((b): b is string => b !== undefined);
+  return { bareModel, extraBetas };
+}
+
+/** Merge extra betas from model flags with explicit betas, deduplicating. */
+function mergeModelFlagBetas(
+  explicit: string[] | undefined,
+  extra: string[]
+): string[] | undefined {
+  if (extra.length === 0) return explicit;
+  const merged = [...(explicit ?? [])];
+  for (const b of extra) {
+    if (!merged.includes(b)) merged.push(b);
+  }
+  return merged;
+}
+
 /**
  * Resolve per-node provider and model.
  * Node-level overrides take precedence over workflow defaults.
@@ -341,11 +374,15 @@ async function resolveNodeProviderAndModel(
   model: string | undefined;
   options: SendQueryOptions | undefined;
 }> {
-  const provider: string = node.provider ?? inferProviderFromModel(node.model, workflowProvider);
+  const { bareModel: nodeBarModel, extraBetas: nodeExtraBetas } = node.model
+    ? parseModelFlags(node.model)
+    : { bareModel: undefined, extraBetas: [] };
+
+  const provider: string = node.provider ?? inferProviderFromModel(nodeBarModel, workflowProvider);
 
   const providerAssistantConfig = config.assistants[provider];
   const model: string | undefined =
-    node.model ??
+    nodeBarModel ??
     (provider === workflowProvider
       ? workflowModel
       : (providerAssistantConfig?.model as string | undefined));
@@ -444,7 +481,7 @@ async function resolveNodeProviderAndModel(
     effort: node.effort ?? workflowLevelOptions.effort,
     thinking: node.thinking ?? workflowLevelOptions.thinking,
     sandbox: node.sandbox ?? workflowLevelOptions.sandbox,
-    betas: node.betas ?? workflowLevelOptions.betas,
+    betas: mergeModelFlagBetas(node.betas ?? workflowLevelOptions.betas, nodeExtraBetas),
     output_format: node.output_format,
     maxBudgetUsd: node.maxBudgetUsd,
     systemPrompt: node.systemPrompt,
@@ -887,6 +924,22 @@ async function executeNodeInternal(
           throw new Error(
             `Node '${node.id}' exceeded cost cap${cap !== undefined ? ` of $${cap.toFixed(2)}` : ''}.`
           );
+        }
+        // SDK sometimes reports is_error:true with subtype:'success' — a contradictory
+        // state where the task actually completed successfully. Treat as success and
+        // log the anomaly rather than failing an otherwise-successful node.
+        if (msg.isError && msg.errorSubtype === 'success') {
+          getLog().warn(
+            {
+              nodeId: node.id,
+              errorSubtype: msg.errorSubtype,
+              sessionId: msg.sessionId,
+              stopReason: msg.stopReason,
+              durationMs: Date.now() - nodeStartTime,
+            },
+            'dag.node_sdk_success_with_error_flag'
+          );
+          break;
         }
         // Fail loudly on any other SDK error result. Previously we broke out of
         // the stream silently, producing empty/partial output without signaling
@@ -1619,7 +1672,8 @@ function buildLoopNodeOptions(
   provider: string,
   model: string | undefined,
   config: WorkflowConfig,
-  workflowLevelOptions?: WorkflowLevelOptions
+  workflowLevelOptions?: WorkflowLevelOptions,
+  extraBetas?: string[]
 ): SendQueryOptions {
   const options: SendQueryOptions = {};
   if (model) options.model = model;
@@ -1633,7 +1687,7 @@ function buildLoopNodeOptions(
       effort: workflowLevelOptions.effort,
       thinking: workflowLevelOptions.thinking,
       sandbox: workflowLevelOptions.sandbox,
-      betas: workflowLevelOptions.betas,
+      betas: mergeModelFlagBetas(workflowLevelOptions.betas, extraBetas ?? []),
       fallbackModel: workflowLevelOptions.fallbackModel,
     };
   }
@@ -1664,7 +1718,8 @@ async function executeLoopNode(
   nodeOutputs: Map<string, NodeOutput>,
   config: WorkflowConfig,
   issueContext?: string,
-  workflowLevelOptions?: WorkflowLevelOptions
+  workflowLevelOptions?: WorkflowLevelOptions,
+  extraBetas?: string[]
 ): Promise<NodeExecutionResult> {
   const loop = node.loop;
   const msgContext = { workflowId: workflowRun.id, nodeName: node.id };
@@ -1701,7 +1756,8 @@ async function executeLoopNode(
     workflowProvider,
     workflowModel,
     config,
-    workflowLevelOptions
+    workflowLevelOptions,
+    extraBetas
   );
 
   // Helper to log event store errors consistently
@@ -1837,6 +1893,21 @@ async function executeLoopNode(
           if (msg.stopReason !== undefined) loopFinalStopReason = msg.stopReason;
           if (msg.numTurns !== undefined) {
             loopTotalNumTurns = (loopTotalNumTurns ?? 0) + msg.numTurns;
+          }
+          // SDK sometimes reports is_error:true with subtype:'success' — see
+          // dag.node_sdk_success_with_error_flag in the regular-node handler.
+          if (msg.isError && msg.errorSubtype === 'success') {
+            getLog().warn(
+              {
+                nodeId: node.id,
+                iteration: i,
+                errorSubtype: msg.errorSubtype,
+                sessionId: msg.sessionId,
+                stopReason: msg.stopReason,
+              },
+              'loop_node.iteration_sdk_success_with_error_flag'
+            );
+            break;
           }
           // Fail the iteration loudly on SDK error results. Previously we broke
           // silently, producing empty output and continuing to the next iteration —
@@ -2585,11 +2656,14 @@ export async function executeDagWorkflow(
           // 3b. Loop node dispatch — manages its own AI sessions and iteration
           if (isLoopNode(node)) {
             // Resolve per-node provider/model overrides (same logic as other node types)
+            const { bareModel: loopBareModel, extraBetas: loopExtraBetas } = node.model
+              ? parseModelFlags(node.model)
+              : { bareModel: undefined, extraBetas: [] };
             const loopProvider: string =
-              node.provider ?? inferProviderFromModel(node.model, workflowProvider);
+              node.provider ?? inferProviderFromModel(loopBareModel, workflowProvider);
             const loopAssistantConfig = config.assistants[loopProvider];
             const loopModel: string | undefined =
-              node.model ??
+              loopBareModel ??
               (loopProvider === workflowProvider
                 ? workflowModel
                 : (loopAssistantConfig?.model as string | undefined));
@@ -2621,7 +2695,8 @@ export async function executeDagWorkflow(
               nodeOutputs,
               config,
               issueContext,
-              workflowLevelOptions
+              workflowLevelOptions,
+              loopExtraBetas
             );
             return { nodeId: node.id, output };
           }
