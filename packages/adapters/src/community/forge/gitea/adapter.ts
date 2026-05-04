@@ -352,6 +352,11 @@ export class GiteaAdapter implements IPlatformAdapter {
 
     // issue_comment (covers both issues and PRs in Gitea)
     if (event.comment) {
+      // Ignore deleted comments - no automation needed
+      if (event.action === 'deleted') {
+        return null;
+      }
+
       const number = event.issue?.number ?? event.pull_request?.number;
       if (!number) return null;
 

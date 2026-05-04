@@ -348,6 +348,11 @@ export class GitHubAdapter implements IPlatformAdapter {
 
     // issue_comment (covers both issues and PRs)
     if (event.comment) {
+      // Ignore deleted comments - no automation needed
+      if (event.action === 'deleted') {
+        return null;
+      }
+
       const number = event.issue?.number ?? event.pull_request?.number;
       if (!number) return null;
       return {

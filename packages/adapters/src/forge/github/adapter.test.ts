@@ -345,6 +345,40 @@ describe('GitHubAdapter', () => {
       // Missing user should not trigger self-filtering (proceeds to conversation creation)
       expect(mockGetOrCreateConversation).toHaveBeenCalled();
     });
+
+    test('should ignore deleted comment events', async () => {
+      const adapter = createSelfFilterAdapter();
+      // Create payload with 'deleted' action
+      const payload = JSON.stringify({
+        action: 'deleted',
+        issue: {
+          number: 42,
+          title: 'Test Issue',
+          body: 'Description',
+          user: { login: 'user123' },
+          labels: [],
+          state: 'open',
+        },
+        comment: {
+          body: '@archon fix this',
+          user: { login: 'user123' },
+        },
+        repository: {
+          owner: { login: 'testuser' },
+          name: 'testrepo',
+          full_name: 'testuser/testrepo',
+          html_url: 'https://github.com/testuser/testrepo',
+          default_branch: 'main',
+        },
+        sender: { login: 'user123' },
+      });
+
+      await adapter.handleWebhook(payload, 'mock-signature');
+
+      // Deleted comments should be silently dropped - no lock acquired, no processing
+      expect(mockLockManager.acquireLock).not.toHaveBeenCalled();
+      expect(mockGetOrCreateConversation).not.toHaveBeenCalled();
+    });
   });
 
   describe('conversationId format', () => {

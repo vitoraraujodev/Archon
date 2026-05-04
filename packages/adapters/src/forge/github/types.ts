@@ -1,5 +1,13 @@
 export interface WebhookEvent {
-  action: 'opened' | 'closed' | 'created' | 'edited' | 'reopened' | 'labeled' | (string & {});
+  action:
+    | 'opened'
+    | 'closed'
+    | 'created'
+    | 'edited'
+    | 'reopened'
+    | 'labeled'
+    | 'deleted'
+    | (string & {});
   issue?: {
     number: number;
     title: string;
