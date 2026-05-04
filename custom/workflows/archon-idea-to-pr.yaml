@@ -15,14 +15,13 @@ description: |
   8. Create PR with template, mark ready
   9. Classify which review agents are needed (cheap haiku)
   10. Conditional code review (only agents that are relevant run)
-  11. Human approval of review findings before applying fixes
-  12. Synthesize and fix review findings
-  13. Final summary with decision matrix -> GitHub comment + follow-up recommendations
+  11. Synthesize and fix review findings
+  12. Final summary with decision matrix -> GitHub comment + follow-up recommendations
 
   NOT for: Executing existing plans (use archon-plan-to-pr), quick fixes, standalone reviews.
 
   Customizations over default:
-  - 3 approval gates at strategic cost boundaries
+  - 2 approval gates at strategic cost boundaries
   - maxBudgetUsd on opus implementation node
   - Haiku classifier skips unnecessary review agents via when: conditions
   - Approval responses flow to downstream nodes for guidance
@@ -261,29 +260,12 @@ nodes:
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
-  # GATE 3: APPROVE FIXES
-  # Filter low-priority findings before spending tokens on fixes.
-  # ═══════════════════════════════════════════════════════════════════
-
-  - id: approve-fixes
-    approval:
-      message: |
-        $synthesize.output
-
-        ---
-        - Approve to implement all suggested fixes.
-        - Approve WITH A COMMENT to indicate which findings to ignore.
-        - Reject to finish without applying fixes (PR is already created).
-      capture_response: true
-    depends_on: [synthesize]
-
-  # ═══════════════════════════════════════════════════════════════════
   # PHASE 7: FIX REVIEW ISSUES
   # ═══════════════════════════════════════════════════════════════════
 
   - id: implement-fixes
     command: archon-implement-review-fixes
-    depends_on: [approve-fixes]
+    depends_on: [synthesize]
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
