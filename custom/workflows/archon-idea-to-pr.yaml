@@ -46,8 +46,9 @@ nodes:
   - id: approve-plan
     approval:
       message: |
-        Review the implementation plan at `$ARTIFACTS_DIR/plan.md`.
+        $create-plan.output
 
+        ---
         - Approve to proceed with branch setup and implementation.
         - Approve WITH A COMMENT to add special instructions for implementation.
         - Reject with feedback to refine the plan (max 2 attempts).
@@ -116,11 +117,9 @@ nodes:
   - id: approve-implementation
     approval:
       message: |
-        Implementation and validation completed.
+        $implement-tasks.output
 
-        Check the diff and validation results before proceeding with
-        PR creation and automated code review.
-
+        ---
         - Approve to create PR and start review.
         - Reject with feedback for adjustments (max 2 attempts).
       capture_response: true
@@ -269,8 +268,9 @@ nodes:
   - id: approve-fixes
     approval:
       message: |
-        Review synthesized. Check the findings above before applying fixes.
+        $synthesize.output
 
+        ---
         - Approve to implement all suggested fixes.
         - Approve WITH A COMMENT to indicate which findings to ignore.
         - Reject to finish without applying fixes (PR is already created).
