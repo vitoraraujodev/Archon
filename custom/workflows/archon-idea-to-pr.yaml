@@ -1,0 +1,296 @@
+name: archon-idea-to-pr
+description: |
+  Use when: You have a feature idea or description and want end-to-end development.
+  Input: Feature description in natural language, or path to a PRD file
+  Output: PR ready for merge with comprehensive review completed
+
+  Full workflow:
+  1. Create comprehensive implementation plan with codebase analysis
+  2. Human approval of plan before expensive implementation
+  3. Setup branch and extract scope limits
+  4. Verify plan research is still valid
+  5. Implement all tasks with type-checking (budget-capped)
+  6. Run full validation suite
+  7. Human approval of implementation before PR creation
+  8. Create PR with template, mark ready
+  9. Classify which review agents are needed (cheap haiku)
+  10. Conditional code review (only agents that are relevant run)
+  11. Human approval of review findings before applying fixes
+  12. Synthesize and fix review findings
+  13. Final summary with decision matrix -> GitHub comment + follow-up recommendations
+
+  NOT for: Executing existing plans (use archon-plan-to-pr), quick fixes, standalone reviews.
+
+  Customizations over default:
+  - 3 approval gates at strategic cost boundaries
+  - maxBudgetUsd on opus implementation node
+  - Haiku classifier skips unnecessary review agents via when: conditions
+  - Approval responses flow to downstream nodes for guidance
+
+interactive: true
+
+nodes:
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 0: CREATE PLAN
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: create-plan
+    command: archon-create-plan
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # GATE 1: APPROVE PLAN
+  # Prevents wasted opus tokens on a bad plan.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: approve-plan
+    approval:
+      message: |
+        Review the implementation plan at `$ARTIFACTS_DIR/plan.md`.
+
+        - Approve to proceed with branch setup and implementation.
+        - Approve WITH A COMMENT to add special instructions for implementation.
+        - Reject with feedback to refine the plan (max 2 attempts).
+      capture_response: true
+      on_reject:
+        prompt: |
+          The reviewer provided feedback on the plan:
+          $REJECTION_REASON
+
+          Re-read the plan at `$ARTIFACTS_DIR/plan.md` and revise it
+          incorporating the feedback. OVERWRITE `$ARTIFACTS_DIR/plan.md`
+          with the revised version. Keep the format and structure, but
+          adjust scope/approach as requested.
+        max_attempts: 2
+    depends_on: [create-plan]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 1: SETUP
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: plan-setup
+    prompt: |
+      Run the plan-setup command. The plan is at `$ARTIFACTS_DIR/plan.md`.
+
+      Additional reviewer instructions (may be empty): $approve-plan.output
+
+      Execute the archon-plan-setup steps: create branch, extract scope limits,
+      and prepare the workspace for implementation.
+    depends_on: [approve-plan]
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 2: CONFIRM PLAN
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: confirm-plan
+    command: archon-confirm-plan
+    depends_on: [plan-setup]
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 3: IMPLEMENT
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: implement-tasks
+    command: archon-implement-tasks
+    depends_on: [confirm-plan]
+    context: fresh
+    model: opus[1m]
+    maxBudgetUsd: 5.00
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 4: VALIDATE
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: validate
+    command: archon-validate
+    depends_on: [implement-tasks]
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # GATE 2: APPROVE IMPLEMENTATION
+  # Prevents review agents from running on broken code.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: approve-implementation
+    approval:
+      message: |
+        Implementation and validation completed.
+
+        Check the diff and validation results before proceeding with
+        PR creation and automated code review.
+
+        - Approve to create PR and start review.
+        - Reject with feedback for adjustments (max 2 attempts).
+      capture_response: true
+      on_reject:
+        prompt: |
+          Reviewer feedback on the implementation:
+          $REJECTION_REASON
+
+          Read the original plan at `$ARTIFACTS_DIR/plan.md` for context.
+          Make the requested adjustments to the code, then run `bun run validate`
+          to confirm everything passes. Summarize what was changed.
+        max_attempts: 2
+    depends_on: [validate]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 5: FINALIZE PR
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: finalize-pr
+    command: archon-finalize-pr
+    depends_on: [approve-implementation]
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 6: CODE REVIEW
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: verify-pr-base
+    bash: |
+      set -euo pipefail
+      EXPECTED="$BASE_BRANCH"
+      ACTUAL=$(gh pr view --json baseRefName -q '.baseRefName')
+      if [ "$ACTUAL" != "$EXPECTED" ]; then
+        PR_NUMBER=$(gh pr view --json number -q '.number')
+        echo "Base mismatch on PR #$PR_NUMBER: expected=$EXPECTED actual=$ACTUAL — re-targeting" >&2
+        gh pr edit "$PR_NUMBER" --base "$EXPECTED"
+      else
+        echo "PR base verified: $EXPECTED"
+      fi
+    depends_on: [finalize-pr]
+
+  - id: review-scope
+    command: archon-pr-review-scope
+    depends_on: [verify-pr-base]
+    context: fresh
+
+  - id: sync
+    command: archon-sync-pr-with-main
+    depends_on: [review-scope]
+    context: fresh
+
+  - id: review-classify
+    prompt: |
+      You are a PR review classifier. Analyze the PR scope and determine
+      which review agents should run.
+
+      ## PR Scope
+
+      $review-scope.output
+
+      ## Rules
+
+      - **Code review**: ALWAYS run. This is mandatory for every PR. It also checks
+        the PR against CLAUDE.md rules and project conventions.
+      - **Error handling**: Run if the diff touches code with try/catch, error handling,
+        async/await, or adds new failure paths.
+      - **Test coverage**: Run if the diff touches source code (not just tests, docs, or config).
+      - **Comment quality**: Run if the diff adds or modifies comments, docstrings, JSDoc,
+        or significant documentation within code files.
+      - **Docs impact**: Run if the diff adds/removes/renames public APIs, commands, CLI flags,
+        environment variables, or user-facing features.
+
+      Provide your reasoning for each decision.
+    depends_on: [sync]
+    model: haiku
+    allowed_tools: []
+    context: fresh
+    output_format:
+      type: object
+      properties:
+        run_code_review:
+          type: string
+          enum: ["true", "false"]
+        run_error_handling:
+          type: string
+          enum: ["true", "false"]
+        run_test_coverage:
+          type: string
+          enum: ["true", "false"]
+        run_comment_quality:
+          type: string
+          enum: ["true", "false"]
+        run_docs_impact:
+          type: string
+          enum: ["true", "false"]
+        reasoning:
+          type: string
+      required:
+        - run_code_review
+        - run_error_handling
+        - run_test_coverage
+        - run_comment_quality
+        - run_docs_impact
+        - reasoning
+
+  - id: code-review
+    command: archon-code-review-agent
+    depends_on: [review-classify]
+    context: fresh
+
+  - id: error-handling
+    command: archon-error-handling-agent
+    depends_on: [review-classify]
+    when: "$review-classify.output.run_error_handling == 'true'"
+    context: fresh
+
+  - id: test-coverage
+    command: archon-test-coverage-agent
+    depends_on: [review-classify]
+    when: "$review-classify.output.run_test_coverage == 'true'"
+    context: fresh
+
+  - id: comment-quality
+    command: archon-comment-quality-agent
+    depends_on: [review-classify]
+    when: "$review-classify.output.run_comment_quality == 'true'"
+    context: fresh
+
+  - id: docs-impact
+    command: archon-docs-impact-agent
+    depends_on: [review-classify]
+    when: "$review-classify.output.run_docs_impact == 'true'"
+    context: fresh
+
+  - id: synthesize
+    command: archon-synthesize-review
+    depends_on: [code-review, error-handling, test-coverage, comment-quality, docs-impact]
+    trigger_rule: one_success
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # GATE 3: APPROVE FIXES
+  # Filter low-priority findings before spending tokens on fixes.
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: approve-fixes
+    approval:
+      message: |
+        Review synthesized. Check the findings above before applying fixes.
+
+        - Approve to implement all suggested fixes.
+        - Approve WITH A COMMENT to indicate which findings to ignore.
+        - Reject to finish without applying fixes (PR is already created).
+      capture_response: true
+    depends_on: [synthesize]
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 7: FIX REVIEW ISSUES
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: implement-fixes
+    command: archon-implement-review-fixes
+    depends_on: [approve-fixes]
+    context: fresh
+
+  # ═══════════════════════════════════════════════════════════════════
+  # PHASE 8: FINAL SUMMARY & FOLLOW-UP
+  # ═══════════════════════════════════════════════════════════════════
+
+  - id: workflow-summary
+    command: archon-workflow-summary
+    depends_on: [implement-fixes]
+    context: fresh
