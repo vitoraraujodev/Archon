@@ -36,6 +36,7 @@ nodes:
   - id: create-plan
     command: archon-create-plan
     context: fresh
+    mcp: /home/archon/.archon/mcp/figma.json
 
   # ═══════════════════════════════════════════════════════════════════
   # GATE 1: APPROVE PLAN
@@ -98,6 +99,7 @@ nodes:
     context: fresh
     model: opus[1m]
     maxBudgetUsd: 5.00
+    mcp: /home/archon/.archon/mcp/figma.json
 
   # ═══════════════════════════════════════════════════════════════════
   # PHASE 4: VALIDATE
