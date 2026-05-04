@@ -205,6 +205,10 @@ export const runWorkflowBodySchema = z
   .object({
     conversationId: z.string(),
     message: z.string(),
+    /** Registered codebase path (default_cwd) to use as the working directory. */
+    cwd: z.string().optional(),
+    /** Branch name to pass as --branch to the workflow executor. */
+    branch: z.string().optional(),
   })
   .openapi('RunWorkflowBody');
 

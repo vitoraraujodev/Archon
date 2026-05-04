@@ -968,7 +968,8 @@ export function registerApiRoutes(
     conversationId: string,
     message: string,
     extraContext?: Omit<HandleMessageContext, 'isolationHints'>,
-    filesToCleanup?: { files: AttachedFile[]; uploadDir: string }
+    filesToCleanup?: { files: AttachedFile[]; uploadDir: string },
+    extraIsolationHints?: HandleMessageContext['isolationHints']
   ): Promise<{ accepted: boolean; status: string }> {
     const result = await lockManager.acquireLock(conversationId, async () => {
       // Emit lock:true at handler start so the UI knows processing has begun.
@@ -976,7 +977,11 @@ export function registerApiRoutes(
       webAdapter.emitLockEvent(conversationId, true);
       try {
         await handleMessage(webAdapter, conversationId, message, {
-          isolationHints: { workflowType: 'thread', workflowId: conversationId },
+          isolationHints: {
+            workflowType: 'thread',
+            workflowId: conversationId,
+            ...extraIsolationHints,
+          },
           ...extraContext,
         });
       } catch (error) {
@@ -1798,7 +1803,7 @@ export function registerApiRoutes(
       return apiError(c, 400, 'Invalid workflow name');
     }
     try {
-      const { conversationId, message } = getValidatedBody(c, runWorkflowBodySchema);
+      const { conversationId, message, cwd, branch } = getValidatedBody(c, runWorkflowBodySchema);
       // Persist user message and register DB ID (same as message endpoint)
       let conv: Awaited<ReturnType<typeof conversationDb.findConversationByPlatformId>> = null;
       try {
@@ -1806,6 +1811,27 @@ export function registerApiRoutes(
       } catch (e: unknown) {
         getLog().error({ err: e, conversationId }, 'conversation_lookup_failed');
       }
+
+      // If cwd is provided, resolve the codebase and attach it to the conversation.
+      // This allows callers (e.g. jira-bridge) to specify which registered project
+      // the workflow should run against without relying on text flags in the message.
+      // Resolution order: exact name match → default_cwd path match.
+      if (conv && cwd) {
+        try {
+          const codebase =
+            (await codebaseDb.findCodebaseByName(cwd)) ??
+            (await codebaseDb.findCodebaseByDefaultCwd(cwd));
+          if (codebase) {
+            await conversationDb.updateConversation(conv.id, { codebase_id: codebase.id });
+            conv = { ...conv, codebase_id: codebase.id };
+          } else {
+            getLog().warn({ cwd, conversationId }, 'run_workflow_cwd_codebase_not_found');
+          }
+        } catch (e: unknown) {
+          getLog().warn({ err: e, cwd, conversationId }, 'run_workflow_cwd_lookup_failed');
+        }
+      }
+
       if (conv) {
         try {
           await messageDb.addMessage(conv.id, 'user', message);
@@ -1826,7 +1852,18 @@ export function registerApiRoutes(
       }
 
       const fullMessage = `/workflow run ${workflowName} ${message}`;
-      const result = await dispatchToOrchestrator(conversationId, fullMessage);
+      // Pass branch as a workflowId hint so the isolation resolver uses it as the
+      // branch name when creating the worktree for this workflow run.
+      const extraIsolationHints = branch
+        ? { workflowType: 'task' as const, workflowId: branch }
+        : undefined;
+      const result = await dispatchToOrchestrator(
+        conversationId,
+        fullMessage,
+        undefined,
+        undefined,
+        extraIsolationHints
+      );
       return c.json(result);
     } catch (error) {
       getLog().error({ err: error }, 'run_workflow_failed');
