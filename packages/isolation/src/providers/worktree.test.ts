@@ -1698,28 +1698,33 @@ describe('WorktreeProvider', () => {
 
       await provider.create(baseRequest);
 
-      // Should include default .archon plus user config
+      // Should include defaults (.archon, .claude) plus user config
       expect(copyWorktreeFilesSpy).toHaveBeenCalledWith(
         '/.archon/workspaces/owner/repo',
         expect.stringContaining('issue-42'),
-        expect.arrayContaining(['.archon', '.env.example -> .env', '.vscode/settings.json'])
+        expect.arrayContaining([
+          '.archon',
+          '.claude',
+          '.env.example -> .env',
+          '.vscode/settings.json',
+        ])
       );
     });
 
-    test('calls copyWorktreeFiles with default .archon when no copyFiles configured', async () => {
+    test('calls copyWorktreeFiles with defaults when no copyFiles configured', async () => {
       copyWorktreeFilesSpy.mockResolvedValue([]);
 
       await provider.create(baseRequest);
 
-      // Should still be called with default .archon
+      // Should still be called with default .archon and .claude
       expect(copyWorktreeFilesSpy).toHaveBeenCalledWith(
         '/.archon/workspaces/owner/repo',
         expect.stringContaining('issue-42'),
-        ['.archon']
+        ['.archon', '.claude']
       );
     });
 
-    test('calls copyWorktreeFiles with default .archon when copyFiles is empty', async () => {
+    test('calls copyWorktreeFiles with defaults when copyFiles is empty', async () => {
       const configLoader: RepoConfigLoader = async () => ({
         baseBranch: 'main',
         copyFiles: [],
@@ -1730,11 +1735,11 @@ describe('WorktreeProvider', () => {
 
       await provider.create(baseRequest);
 
-      // Should still be called with default .archon
+      // Should still be called with default .archon and .claude
       expect(copyWorktreeFilesSpy).toHaveBeenCalledWith(
         '/.archon/workspaces/owner/repo',
         expect.stringContaining('issue-42'),
-        ['.archon']
+        ['.archon', '.claude']
       );
     });
 
@@ -1782,24 +1787,24 @@ describe('WorktreeProvider', () => {
       expect(copyWorktreeFilesSpy).not.toHaveBeenCalled();
     });
 
-    test('should copy .archon directory by default (without config)', async () => {
+    test('should copy .archon and .claude directories by default (without config)', async () => {
       // Mock: copyWorktreeFiles succeeds
       copyWorktreeFilesSpy.mockResolvedValue([{ source: '.archon', destination: '.archon' }]);
 
       // Create worktree
       const result = await provider.create(baseRequest);
 
-      // Verify .archon was copied even without config
+      // Verify defaults were copied even without config
       expect(copyWorktreeFilesSpy).toHaveBeenCalledWith(
         '/.archon/workspaces/owner/repo',
         expect.stringContaining('issue-42'),
-        ['.archon'] // Default only
+        ['.archon', '.claude']
       );
 
       expect(result.workingPath).toContain('issue-42');
     });
 
-    test('should merge .archon default with user copyFiles config', async () => {
+    test('should merge defaults with user copyFiles config', async () => {
       // Mock: User config with additional files
       const configLoader: RepoConfigLoader = async () => ({
         baseBranch: 'main',
@@ -1810,6 +1815,7 @@ describe('WorktreeProvider', () => {
       // Mock: copyWorktreeFiles succeeds
       copyWorktreeFilesSpy.mockResolvedValue([
         { source: '.archon', destination: '.archon' },
+        { source: '.claude', destination: '.claude' },
         { source: '.env', destination: '.env' },
         { source: '.vscode', destination: '.vscode' },
       ]);
@@ -1817,33 +1823,36 @@ describe('WorktreeProvider', () => {
       // Create worktree
       await provider.create(baseRequest);
 
-      // Verify .archon + user files were copied
+      // Verify defaults + user files were copied
       expect(copyWorktreeFilesSpy).toHaveBeenCalledWith(
         '/.archon/workspaces/owner/repo',
         expect.stringContaining('issue-42'),
-        expect.arrayContaining(['.archon', '.env', '.vscode'])
+        expect.arrayContaining(['.archon', '.claude', '.env', '.vscode'])
       );
     });
 
-    test('should deduplicate .archon if user explicitly includes it', async () => {
-      // Mock: User config explicitly includes .archon
+    test('should deduplicate defaults if user explicitly includes them', async () => {
+      // Mock: User config explicitly includes .archon and .claude
       const configLoader: RepoConfigLoader = async () => ({
         baseBranch: 'main',
-        copyFiles: ['.archon', '.env'],
+        copyFiles: ['.archon', '.claude', '.env'],
       });
       provider = new WorktreeProvider(configLoader);
 
       copyWorktreeFilesSpy.mockResolvedValue([
         { source: '.archon', destination: '.archon' },
+        { source: '.claude', destination: '.claude' },
         { source: '.env', destination: '.env' },
       ]);
 
       await provider.create(baseRequest);
 
-      // Verify .archon appears only once (deduplicated by Set)
+      // Verify defaults appear only once (deduplicated by Set)
       const copyFilesArg = copyWorktreeFilesSpy.mock.calls[0][2];
       const archonCount = copyFilesArg.filter((f: string) => f === '.archon').length;
+      const claudeCount = copyFilesArg.filter((f: string) => f === '.claude').length;
       expect(archonCount).toBe(1);
+      expect(claudeCount).toBe(1);
     });
 
     test('throws with config error details when config loading fails and no fromBranch', async () => {

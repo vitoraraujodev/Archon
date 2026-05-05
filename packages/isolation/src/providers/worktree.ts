@@ -827,7 +827,7 @@ export class WorktreeProvider implements IIsolationProvider {
     worktreeConfig?: { baseBranch?: string; copyFiles?: string[] } | null
   ): Promise<{ configLoadFailed: boolean }> {
     // Default files to always copy
-    const defaultCopyFiles = ['.archon'];
+    const defaultCopyFiles = ['.archon', '.claude'];
 
     // Load user config - log errors and set configLoadFailed, but don't fail worktree creation
     let userCopyFiles: string[] = [];

@@ -10,21 +10,20 @@ description: |
   3. Setup branch and extract scope limits
   4. Verify plan research is still valid
   5. Implement all tasks with type-checking (budget-capped)
-  6. Run full validation suite
-  7. Human approval of implementation before PR creation
-  8. Create PR with template, mark ready
-  9. Classify which review agents are needed (cheap haiku)
-  10. Conditional code review (only agents that are relevant run)
-  11. Synthesize and fix review findings
-  12. Final summary with decision matrix -> GitHub comment + follow-up recommendations
+  6. Run full validation suite (lint, types, tests)
+  7. Create PR with template, mark ready
+  8. Classify which review agents are needed (cheap haiku)
+  9. Conditional code review (only agents that are relevant run)
+  10. Synthesize and fix review findings
+  11. Final summary with decision matrix -> GitHub comment + follow-up recommendations
 
   NOT for: Executing existing plans (use archon-plan-to-pr), quick fixes, standalone reviews.
 
   Customizations over default:
-  - 2 approval gates at strategic cost boundaries
+  - 1 approval gate before expensive implementation
   - maxBudgetUsd on opus implementation node
   - Haiku classifier skips unnecessary review agents via when: conditions
-  - Approval responses flow to downstream nodes for guidance
+  - Approval response flows to downstream nodes for guidance
 
 interactive: true
 
@@ -111,37 +110,12 @@ nodes:
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
-  # GATE 2: APPROVE IMPLEMENTATION
-  # Prevents review agents from running on broken code.
-  # ═══════════════════════════════════════════════════════════════════
-
-  - id: approve-implementation
-    approval:
-      message: |
-        $implement-tasks.output
-
-        ---
-        - Approve to create PR and start review.
-        - Reject with feedback for adjustments (max 2 attempts).
-      capture_response: true
-      on_reject:
-        prompt: |
-          Reviewer feedback on the implementation:
-          $REJECTION_REASON
-
-          Read the original plan at `$ARTIFACTS_DIR/plan.md` for context.
-          Make the requested adjustments to the code, then run `bun run validate`
-          to confirm everything passes. Summarize what was changed.
-        max_attempts: 2
-    depends_on: [validate]
-
-  # ═══════════════════════════════════════════════════════════════════
   # PHASE 5: FINALIZE PR
   # ═══════════════════════════════════════════════════════════════════
 
   - id: finalize-pr
     command: archon-finalize-pr
-    depends_on: [approve-implementation]
+    depends_on: [validate]
     context: fresh
 
   # ═══════════════════════════════════════════════════════════════════
