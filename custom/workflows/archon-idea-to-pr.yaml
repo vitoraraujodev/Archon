@@ -108,6 +108,7 @@ nodes:
     command: archon-validate
     depends_on: [implement-tasks]
     context: fresh
+    maxBudgetUsd: 1.20
 
   # ═══════════════════════════════════════════════════════════════════
   # PHASE 5: FINALIZE PR
@@ -117,6 +118,7 @@ nodes:
     command: archon-finalize-pr
     depends_on: [validate]
     context: fresh
+    model: haiku
 
   # ═══════════════════════════════════════════════════════════════════
   # PHASE 6: CODE REVIEW
@@ -140,11 +142,13 @@ nodes:
     command: archon-pr-review-scope
     depends_on: [verify-pr-base]
     context: fresh
+    model: haiku
 
   - id: sync
     command: archon-sync-pr-with-main
     depends_on: [review-scope]
     context: fresh
+    model: haiku
 
   - id: review-classify
     prompt: |
@@ -210,24 +214,28 @@ nodes:
     depends_on: [review-classify]
     when: "$review-classify.output.run_error_handling == 'true'"
     context: fresh
+    model: haiku
 
   - id: test-coverage
     command: archon-test-coverage-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_test_coverage == 'true'"
     context: fresh
+    model: haiku
 
   - id: comment-quality
     command: archon-comment-quality-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_comment_quality == 'true'"
     context: fresh
+    model: haiku
 
   - id: docs-impact
     command: archon-docs-impact-agent
     depends_on: [review-classify]
     when: "$review-classify.output.run_docs_impact == 'true'"
     context: fresh
+    model: haiku
 
   - id: synthesize
     command: archon-synthesize-review
@@ -243,6 +251,7 @@ nodes:
     command: archon-implement-review-fixes
     depends_on: [synthesize]
     context: fresh
+    maxBudgetUsd: 2.50
 
   # ═══════════════════════════════════════════════════════════════════
   # PHASE 8: FINAL SUMMARY & FOLLOW-UP
@@ -252,3 +261,5 @@ nodes:
     command: archon-workflow-summary
     depends_on: [implement-fixes]
     context: fresh
+    model: haiku
+    effort: low
