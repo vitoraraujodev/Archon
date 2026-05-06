@@ -1,4 +1,26 @@
 {
+  "permissions": {
+    "deny": [
+      "Read(node_modules/**)",
+      "Read(**/node_modules/**)",
+      "Read(bun.lock)",
+      "Read(bun.lockb)",
+      "Read(yarn.lock)",
+      "Read(package-lock.json)",
+      "Read(pnpm-lock.yaml)",
+      "Read(dist/**)",
+      "Read(**/dist/**)",
+      "Read(build/**)",
+      "Read(**/build/**)",
+      "Read(coverage/**)",
+      "Read(**/coverage/**)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*.log)"
+    ]
+  },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
